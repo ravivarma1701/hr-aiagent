@@ -1,0 +1,17 @@
+{
+  "title": "CreateChatSessionResponseStub",
+  "type": "object",
+  "required": ["success", "data", "error"],
+  "properties": {
+    "success": { "type": "boolean" },
+    "data": { "type": "null" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "example": "CHAT_NOT_IMPLEMENTED" },
+        "message": { "type": "string", "example": "Chat session creation is a Phase-3 stub and not implemented yet" }
+      }
+    }
+  }
+}

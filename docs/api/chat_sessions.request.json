@@ -1,0 +1,13 @@
+{
+  "title": "CreateChatSessionRequest",
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120,
+      "description": "Human-readable name for the chat session."
+    }
+  }
+}

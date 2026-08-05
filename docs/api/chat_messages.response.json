@@ -1,0 +1,17 @@
+{
+  "title": "CreateChatMessageResponseStub",
+  "type": "object",
+  "required": ["success", "data", "error"],
+  "properties": {
+    "success": { "type": "boolean" },
+    "data": { "type": "null" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "example": "CHAT_NOT_IMPLEMENTED" },
+        "message": { "type": "string", "example": "Chat messaging is a Phase-3 stub and not implemented yet" }
+      }
+    }
+  }
+}

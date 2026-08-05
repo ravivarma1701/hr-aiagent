@@ -1,0 +1,6 @@
+Employee Data Privacy Policy
+
+1. Employee personal data must be accessed only for approved HR operations.
+2. Sharing employee records outside authorized systems is prohibited.
+3. Any suspected data breach must be reported to IT Security within 1 hour.
+4. Access logs are reviewed monthly by compliance team.

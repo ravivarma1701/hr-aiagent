@@ -1,0 +1,18 @@
+{
+  "title": "CreateChatMessageRequest",
+  "type": "object",
+  "required": ["role", "content"],
+  "properties": {
+    "role": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 20,
+      "description": "Message role, such as user or assistant."
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    }
+  }
+}
