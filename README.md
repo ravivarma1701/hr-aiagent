@@ -37,7 +37,7 @@ It is designed as a practical base for AI feature integration (RAG, assistants, 
 - My Documents with search, view, and download; delete is allowed only for `OTHER` document type
 - Password-protected PDF payslips (DOB in `DD-MM-YY`) for generated and uploaded payslips
 - Notification bell for announcements, polls, ticket assignment, ticket status, leave decision, and employee-document uploads by others (not self-uploads)
-- AI contract stubs (`/api/v1/chat/*`) returning `501` for future implementation
+- **AI PeopleOps Copilot** (Phase 4) — Policy RAG assistant, read-only NL-to-SQL data agent, HR task automation agent with backend API tool-calling, role-based AI permissions, and AI audit logging. See [AI Copilot](#ai-copilot-phase-4) below.
 
 ## Repository Structure
 
@@ -236,6 +236,64 @@ docker-compose exec api python scripts/seed.py
   - Admin/Manager upload for any employee: `POST /api/v1/employees/{employee_id}/documents`
   - Admin/Manager payslip upload: `POST /api/v1/employees/{employee_id}/documents/payslip`
 
+## AI Copilot (Phase 4)
+
+The AI layer lives under `backend/app/services/ai/` and is wired into the
+existing app rather than bolted on as a separate service. See
+[`docs/ai_architecture.md`](docs/ai_architecture.md) for the full design.
+
+### What it does
+
+- **Policy RAG** (`POST /api/v1/chat/policy`) — chunks + embeds `hr_policies`
+  content/files with a local `sentence-transformers` model, stores vectors in
+  a persistent local ChromaDB, retrieves relevant chunks, and generates a
+  grounded answer (Claude) with source citations. Falls back to returning the
+  best-matching excerpt verbatim if no LLM key is configured, so retrieval is
+  demonstrable even before you add a key.
+- **SQL Agent** (`POST /api/v1/chat/sql`) — natural language to a single
+  read-only `SELECT`, executed against per-request, per-role SQLite `TEMP
+  VIEW`s (never the raw tables), so row/column-level security is enforced by
+  the database itself, not just by the prompt.
+- **HR Action Agent** (`POST /api/v1/chat/actions`) — Claude tool-calling
+  picks a backend API to call with the *current user's own token*; the AI
+  layer never writes to the database directly. High-impact actions
+  (approve/reject leave, assign ticket/project, post announcement) return a
+  confirmation step before executing.
+- **Router** (`POST /api/v1/chat/router`, optional) — classifies a message
+  into `POLICY_QA` / `SQL_QUERY` / `HR_ACTION` / `UNKNOWN` so a single chat
+  box can dispatch to the right agent.
+- **AI audit log** (`ai_audit_logs` table) — every call above is recorded
+  with user, role, message, intent, tool used, and outcome.
+- Frontend: `/ai-copilot` page (chat with mode tabs, source chips, SQL result
+  table, action confirmation cards).
+
+### Setup
+
+1. Install the extra Python deps (already in `requirements.txt`):
+   `anthropic`, `sentence-transformers`, `chromadb`, `sqlglot`, `httpx`.
+   `sentence-transformers` pulls in `torch`; on an Intel Mac make sure you're
+   on Python 3.11/3.12 (torch's last macOS x86_64 wheel is 2.2.2 — there is no
+   Python 3.13 x86_64 wheel).
+2. Copy `backend/.env.example` → `backend/.env` and set `ANTHROPIC_API_KEY`
+   to enable generation (RAG answers, SQL generation, action tool-calling,
+   and LLM-based intent routing). Without a key, retrieval/guardrails still
+   run and the endpoints return a clear "AI generation is not configured"
+   message instead of erroring.
+3. Run the app once — the vector store is built automatically on startup if
+   empty. To rebuild it manually after editing policy content:
+   `python -m scripts.ingest_policies` (run inside the backend venv/container).
+
+### Environment variables (`backend/.env`)
+
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | Claude API key; unset = generation disabled, retrieval/guardrails still work |
+| `AI_MODEL_NAME` | Claude model id (default `claude-sonnet-4-5`) |
+| `AI_EMBEDDING_MODEL_NAME` | local sentence-transformers model (default `all-MiniLM-L6-v2`) |
+| `AI_VECTOR_STORE_DIR` | on-disk ChromaDB persistence directory |
+| `AI_SQL_MAX_ROWS` | hard cap on rows the SQL agent can return |
+| `INTERNAL_API_BASE_URL` | base URL the Action Agent's tools call back into (this same service) |
+
 ## Troubleshooting
 
 - If frontend shows stale build/runtime issues:
@@ -251,6 +309,9 @@ docker-compose exec api python scripts/seed.py
 - Product requirements: [`PRD.md`](docs/PRD.md)
 - Database schema reference: [`db_tables_samples.md`](docs/db_tables_samples.md)
 - AI chat endpoint contracts: `docs/api/`
+- AI architecture (Phase 4): [`ai_architecture.md`](docs/ai_architecture.md)
+- AI permissions matrix: [`ai_permissions_matrix.md`](docs/ai_permissions_matrix.md)
+- AI evaluation results: [`ai_eval_results.md`](docs/ai_eval_results.md)
 
 
 Copyright (c) Codebasics. All rights reserved.

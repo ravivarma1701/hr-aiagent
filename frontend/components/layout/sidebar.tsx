@@ -3,11 +3,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, CalendarClock, CalendarDays, CalendarPlus2, CircleDollarSign, FileText, LayoutDashboard, ScrollText, Ticket, UserCircle2, Users, Vote } from "lucide-react";
+import { Bell, Bot, CalendarClock, CalendarDays, CalendarPlus2, CircleDollarSign, FileText, LayoutDashboard, ScrollText, Ticket, UserCircle2, Users, Vote } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
+  { icon: Bot, label: "AI Copilot", href: "/ai-copilot" },
   { icon: Users, label: "Employees", href: "/employees" },
   { icon: UserCircle2, label: "My Profile", href: "/me" },
   { icon: FileText, label: "My Documents", href: "/me/documents" },

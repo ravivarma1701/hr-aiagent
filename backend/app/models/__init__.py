@@ -1,3 +1,4 @@
+from app.models.ai_audit_log import AIAuditLog
 from app.models.announcement import Announcement
 from app.models.attendance_log import AttendanceLog
 from app.models.department import Department

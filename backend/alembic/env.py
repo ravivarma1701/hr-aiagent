@@ -6,11 +6,14 @@ from sqlalchemy import engine_from_config, pool
 
 from app.db.base import Base
 from app.models import (
+    ai_audit_log,
     announcement,
     attendance_log,
     department,
     employee,
     employee_document,
+    employee_project,
+    employee_skill,
     hr_policy,
     job_history,
     leave_balance,
@@ -19,6 +22,8 @@ from app.models import (
     payroll_record,
     poll,
     poll_response,
+    project,
+    skill,
     ticket,
 )
 

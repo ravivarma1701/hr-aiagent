@@ -105,7 +105,8 @@ export default function PollsPage() {
     if (!token) return;
     const result = await fetchPollResults(token, pollId);
     if (!result.ok || !("success" in result.body) || !result.body.success) return;
-    setResultsByPoll((prev) => ({ ...prev, [pollId]: result.body.data.items }));
+    const items = result.body.data.items;
+    setResultsByPoll((prev) => ({ ...prev, [pollId]: items }));
   };
 
   return (

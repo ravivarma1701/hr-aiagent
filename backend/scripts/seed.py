@@ -497,9 +497,34 @@ async def seed():
         session.add(PollResponse(poll_id=poll.id, employee_id=admin_user_id, option_index=1))
 
         policies = [
-            ("Leave Policy", "Employees can avail casual, sick, and earned leave as per allocated balances."),
-            ("Attendance Policy", "Clock-in should be completed before 9:30 AM on working days."),
-            ("WFH Policy", "Work from home requests require manager approval for planned leaves."),
+            (
+                "Leave Policy",
+                "Every full-time employee is allocated 12 casual leaves, 10 sick leaves, and 15 earned leaves "
+                "per calendar year. Casual leave covers short personal needs and should be planned in advance "
+                "where possible. Sick leave can be taken for illness and does not require advance notice, "
+                "though a manager should be informed as soon as practical. Earned leave accrues with tenure and "
+                "can be used for planned vacations. Employees may take a half-day leave (first half or second "
+                "half of the working day) for any leave type by marking the request as half-day when applying; "
+                "a half-day request deducts 0.5 days from the relevant balance. Leave requests are submitted "
+                "through the HRMS and require manager (or admin) approval before they are confirmed, except for "
+                "leave taken by an Admin, which is auto-approved.",
+            ),
+            (
+                "Attendance Policy",
+                "Employees are expected to clock in before 9:30 AM on working days. A clock-in after 9:30 AM is "
+                "recorded as a late arrival. Occasional late arrivals are tolerated, but frequent lateness "
+                "(more than 3 times in a month) is flagged to the employee's manager and may be discussed in a "
+                "performance conversation; it does not automatically deduct leave balance or pay. Employees who "
+                "know they will be late should inform their manager in advance where possible.",
+            ),
+            (
+                "WFH Policy",
+                "Employees may request to work from home (WFH) for planned days by informing their manager in "
+                "advance; manager approval is required for planned WFH. In the attendance system, a day can be "
+                "marked as WFH instead of an on-site clock-in. WFH is intended for occasional remote work needs "
+                "(e.g. focused work, minor health issues, or logistics) rather than a permanent arrangement; "
+                "employees wanting a recurring WFH schedule should discuss it directly with their manager and HR.",
+            ),
             ("Code of Conduct", "All employees must follow professional communication standards."),
             ("Travel Reimbursement", "Travel claims must be submitted within 15 days of return."),
             ("Data Security", "Sensitive company data must be accessed only on approved devices."),

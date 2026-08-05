@@ -15,6 +15,7 @@ export function middleware(request: NextRequest) {
   const isTicketsRoute = pathname.startsWith("/tickets");
   const isPollsRoute = pathname.startsWith("/polls");
   const isHRPoliciesRoute = pathname.startsWith("/hr-policies");
+  const isAiCopilotRoute = pathname.startsWith("/ai-copilot");
   const isLoginRoute = pathname === "/login";
 
   if (
@@ -28,7 +29,8 @@ export function middleware(request: NextRequest) {
       isHRPoliciesRoute ||
       isPollsRoute ||
       isTeamCalendarRoute ||
-      isTicketsRoute) &&
+      isTicketsRoute ||
+      isAiCopilotRoute) &&
     !authCookie
   ) {
     return NextResponse.redirect(new URL("/login", request.url));
@@ -55,5 +57,6 @@ export const config = {
     "/polls/:path*",
     "/team-calendar/:path*",
     "/tickets/:path*",
+    "/ai-copilot/:path*",
   ],
 };

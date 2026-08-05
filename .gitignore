@@ -18,6 +18,7 @@ venv/
 frontend/node_modules/
 frontend/.next/
 frontend/.turbo/
+frontend/tsconfig.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -33,11 +34,17 @@ Thumbs.db
 *.md
 !PRD.md
 !SOFTWARE_ENGINEER_LEARNER_GUIDE.md
+!README.md
+!docs/**/*.md
 
 # Local runtime/build artifacts
 frontend/.next/
 backend/storage/hrms.db
 backend/storage/employee-documents/
 backend/storage/profile-photos/
+backend/storage/vector-store/
 **/__pycache__/
 *.pyc
+
+# venv
+backend/.venv/

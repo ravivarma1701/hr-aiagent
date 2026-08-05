@@ -1388,3 +1388,89 @@ export async function downloadHRPolicyDocument(
   }
   return { ok: true, status: response.status, body: await response.blob() };
 }
+
+// --- AI Copilot (Phase 4) ---------------------------------------------------
+
+export type PolicySource = {
+  title: string;
+  category: string;
+  filename: string;
+};
+
+export type ChatPolicyResult = {
+  answer: string;
+  sources: PolicySource[];
+};
+
+export type ChatSQLResult = {
+  answer: string;
+  sql: string | null;
+  rows: Record<string, unknown>[];
+};
+
+export type PendingAction = {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+};
+
+export type ChatActionResult = {
+  answer: string;
+  action: string | null;
+  status: string;
+  result: Record<string, unknown> | Record<string, unknown>[] | null;
+  pending_action: PendingAction | null;
+};
+
+export type ChatRouterResult = {
+  intent: "POLICY_QA" | "SQL_QUERY" | "HR_ACTION" | "UNKNOWN";
+  confidence: number;
+  reason: string;
+};
+
+export async function sendPolicyChat(
+  token: string,
+  message: string
+): Promise<ApiResult<ApiEnvelope<ChatPolicyResult> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/policy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ message }),
+  });
+  return { ok: response.ok, status: response.status, body: await response.json() };
+}
+
+export async function sendSqlChat(
+  token: string,
+  message: string
+): Promise<ApiResult<ApiEnvelope<ChatSQLResult> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/sql`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ message }),
+  });
+  return { ok: response.ok, status: response.status, body: await response.json() };
+}
+
+export async function sendActionChat(
+  token: string,
+  payload: { message: string; confirm?: boolean; pending_action?: PendingAction | null }
+): Promise<ApiResult<ApiEnvelope<ChatActionResult> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  return { ok: response.ok, status: response.status, body: await response.json() };
+}
+
+export async function sendRouterChat(
+  token: string,
+  message: string
+): Promise<ApiResult<ApiEnvelope<ChatRouterResult> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/router`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ message }),
+  });
+  return { ok: response.ok, status: response.status, body: await response.json() };
+}

@@ -14,3 +14,11 @@ structlog==25.4.0
 faker==37.6.0
 pypdf==5.1.0
 reportlab==4.2.5
+
+# AI layer (Phase 4)
+anthropic==0.69.0
+sentence-transformers==3.3.1
+chromadb==0.5.23
+sqlglot==25.32.1
+httpx==0.28.1
+numpy<2

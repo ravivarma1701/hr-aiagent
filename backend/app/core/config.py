@@ -17,5 +17,24 @@ class Settings(BaseSettings):
     profile_photo_upload_dir: str = "/app/storage/profile-photos"
     employee_document_upload_dir: str = "/app/storage/employee-documents"
 
+    # --- AI layer (Phase 4) ---
+    # LLM provider. "anthropic" is the only implementation today; the client is
+    # written behind a small interface so another provider could be added later.
+    ai_llm_provider: str = "anthropic"
+    anthropic_api_key: str = ""
+    ai_model_name: str = "claude-sonnet-4-5"
+    ai_max_output_tokens: int = 1024
+
+    # Local embedding model for the Policy RAG vector store (sentence-transformers).
+    ai_embedding_model_name: str = "all-MiniLM-L6-v2"
+    ai_vector_store_dir: str = "/app/storage/vector-store"
+
+    # SQL Agent guardrails
+    ai_sql_max_rows: int = 200
+
+    # Base URL the Action Agent's tool wrappers call back into for existing
+    # backend APIs. Must always point at this same service.
+    internal_api_base_url: str = "http://127.0.0.1:8000"
+
 
 settings = Settings()
