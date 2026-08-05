@@ -1,0 +1,43 @@
+# Env
+backend/.env
+frontend/.env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node / Next
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Keep only PRD markdown in repo root
+*.md
+!PRD.md
+!SOFTWARE_ENGINEER_LEARNER_GUIDE.md
+
+# Local runtime/build artifacts
+frontend/.next/
+backend/storage/hrms.db
+backend/storage/employee-documents/
+backend/storage/profile-photos/
+**/__pycache__/
+*.pyc
