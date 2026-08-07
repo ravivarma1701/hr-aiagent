@@ -18,11 +18,13 @@ class Settings(BaseSettings):
     employee_document_upload_dir: str = "/app/storage/employee-documents"
 
     # --- AI layer (Phase 4) ---
-    # LLM provider. "anthropic" is the only implementation today; the client is
-    # written behind a small interface so another provider could be added later.
-    ai_llm_provider: str = "anthropic"
+    # LLM provider: "gemini" or "anthropic". llm_client.py dispatches on this
+    # so the rest of the codebase (agents, endpoints) never touches a
+    # provider SDK directly.
+    ai_llm_provider: str = "gemini"
+    gemini_api_key: str = ""
     anthropic_api_key: str = ""
-    ai_model_name: str = "claude-sonnet-4-5"
+    ai_model_name: str = "gemini-flash-latest"
     ai_max_output_tokens: int = 1024
 
     # Local embedding model for the Policy RAG vector store (sentence-transformers).

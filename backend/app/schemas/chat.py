@@ -1,4 +1,16 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class ChatHistoryMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str = Field(max_length=4000)
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, value: str) -> str:
+        if value not in {"user", "assistant"}:
+            raise ValueError("role must be 'user' or 'assistant'")
+        return value
 
 
 class ChatSessionCreate(BaseModel):
@@ -47,6 +59,7 @@ class ChatActionRequest(BaseModel):
     message: str = Field(default="", max_length=2000)
     confirm: bool = False
     pending_action: PendingAction | None = None
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
 
 
 class ChatActionResponse(BaseModel):
@@ -59,6 +72,7 @@ class ChatActionResponse(BaseModel):
 
 class ChatRouterRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
 
 
 class ChatRouterResponse(BaseModel):

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import re
 
-from app.services.ai.llm_client import AIUnavailableError, complete_json, is_configured
+import structlog
+
+from app.services.ai.llm_client import LLMMessage, complete_json, is_configured
+
+logger = structlog.get_logger()
 
 VALID_INTENTS = {"POLICY_QA", "SQL_QUERY", "HR_ACTION", "UNKNOWN"}
 
@@ -49,27 +53,46 @@ def _heuristic(message: str) -> tuple[str, float, str]:
     return "UNKNOWN", 0.2, "Could not confidently classify the message with keyword heuristics."
 
 
-_ROUTER_SYSTEM_PROMPT = """Classify the user's HR chat message into exactly
-one of: POLICY_QA (asking about an HR policy/rule), SQL_QUERY (asking to look
-up employees/projects/departments/skills/leave/ticket data), HR_ACTION
-(asking to perform a mutation like applying for leave, creating a ticket,
-approving/rejecting something, assigning someone, or posting an
+_ROUTER_SYSTEM_PROMPT = """Classify the user's LATEST HR chat message into
+exactly one of: POLICY_QA (asking about an HR policy/rule), SQL_QUERY
+(asking to look up employees/projects/departments/skills/leave/ticket data),
+HR_ACTION (asking to perform a mutation like applying for leave, creating a
+ticket, approving/rejecting something, assigning someone, or posting an
 announcement), or UNKNOWN.
+
+If prior conversation turns are given, use them for context -- a short
+reply like "its a casual leave" or "yes, confirm it" only makes sense in
+light of what was asked or proposed just before it, and is very likely a
+continuation of whatever the previous turn was about (often HR_ACTION,
+answering a clarifying question).
 
 Respond as JSON: {"intent": "POLICY_QA|SQL_QUERY|HR_ACTION|UNKNOWN", "confidence": 0.0-1.0, "reason": "short reason"}
 """
 
 
-async def classify_intent(message: str) -> dict:
+def _build_router_prompt(message: str, history: list[LLMMessage] | None) -> str:
+    if not history:
+        return message
+    transcript = "\n".join(f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in history)
+    return f"Conversation so far:\n{transcript}\n\nLatest user message: {message}"
+
+
+async def classify_intent(message: str, history: list[LLMMessage] | None = None) -> dict:
     if is_configured():
         try:
-            result = await complete_json(system=_ROUTER_SYSTEM_PROMPT, user_prompt=message, max_tokens=200)
+            prompt = _build_router_prompt(message, history)
+            result = await complete_json(system=_ROUTER_SYSTEM_PROMPT, user_prompt=prompt, max_tokens=200)
             intent = result.get("intent")
             if intent in VALID_INTENTS:
                 confidence = float(result.get("confidence", 0.5))
                 return {"intent": intent, "confidence": max(0.0, min(1.0, confidence)), "reason": result.get("reason", "")}
-        except (AIUnavailableError, ValueError, TypeError):
-            pass
+        except Exception:
+            # This function's entire contract is "always return a usable
+            # classification" -- any provider-side failure (rate limit,
+            # transient API error, malformed JSON, etc.) falls back to the
+            # keyword heuristic below rather than propagating, so a flaky
+            # LLM call never turns into a crashed request.
+            logger.warning("intent_classification_llm_failed", exc_info=True)
 
     intent, confidence, reason = _heuristic(message)
     return {"intent": intent, "confidence": confidence, "reason": reason}

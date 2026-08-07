@@ -158,7 +158,7 @@ async def answer_policy_question(question: str) -> dict:
         best = relevant[0]
         return {
             "answer": (
-                "AI generation is not configured (no ANTHROPIC_API_KEY) so this is the "
+                "AI generation is not configured (no LLM API key) so this is the "
                 f"most relevant policy excerpt rather than a generated answer:\n\n\"{best['text'].strip()}\""
             ),
             "sources": sources,

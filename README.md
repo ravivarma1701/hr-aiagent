@@ -247,14 +247,15 @@ existing app rather than bolted on as a separate service. See
 - **Policy RAG** (`POST /api/v1/chat/policy`) — chunks + embeds `hr_policies`
   content/files with a local `sentence-transformers` model, stores vectors in
   a persistent local ChromaDB, retrieves relevant chunks, and generates a
-  grounded answer (Claude) with source citations. Falls back to returning the
-  best-matching excerpt verbatim if no LLM key is configured, so retrieval is
-  demonstrable even before you add a key.
+  grounded answer (Gemini by default, Claude also supported) with source
+  citations. Falls back to returning the best-matching excerpt verbatim if
+  no LLM key is configured, so retrieval is demonstrable even before you add
+  a key.
 - **SQL Agent** (`POST /api/v1/chat/sql`) — natural language to a single
   read-only `SELECT`, executed against per-request, per-role SQLite `TEMP
   VIEW`s (never the raw tables), so row/column-level security is enforced by
   the database itself, not just by the prompt.
-- **HR Action Agent** (`POST /api/v1/chat/actions`) — Claude tool-calling
+- **HR Action Agent** (`POST /api/v1/chat/actions`) — LLM tool-calling
   picks a backend API to call with the *current user's own token*; the AI
   layer never writes to the database directly. High-impact actions
   (approve/reject leave, assign ticket/project, post announcement) return a
@@ -262,23 +263,82 @@ existing app rather than bolted on as a separate service. See
 - **Router** (`POST /api/v1/chat/router`, optional) — classifies a message
   into `POLICY_QA` / `SQL_QUERY` / `HR_ACTION` / `UNKNOWN` so a single chat
   box can dispatch to the right agent.
+- **LangGraph orchestration** — `/chat/policy`, `/chat/sql`, and
+  `/chat/actions` all run through one compiled `langgraph.graph.StateGraph`
+  (`backend/app/services/ai/graph.py`): load user context → classify intent
+  → route to the right agent → (for actions) propose → permission-check →
+  confirm-gate → execute → generate final response → audit log. See
+  `docs/ai_architecture.md` for the node/edge diagram.
 - **AI audit log** (`ai_audit_logs` table) — every call above is recorded
   with user, role, message, intent, tool used, and outcome.
 - Frontend: `/ai-copilot` page (chat with mode tabs, source chips, SQL result
   table, action confirmation cards).
 
+### Workflow
+
+`/chat/policy`, `/chat/sql`, and `/chat/actions` all run through one
+compiled LangGraph `StateGraph` (`backend/app/services/ai/graph.py`) rather
+than each endpoint calling its agent directly:
+
+```mermaid
+flowchart TD
+    Start(["User message"]) --> LoadCtx["load_user_context"]
+    LoadCtx --> Classify["classify_intent"]
+
+    Classify -->|POLICY_QA| Policy["policy_agent<br/>(RAG over hr_policies)"]
+    Classify -->|SQL_QUERY| SQL["sql_agent_node<br/>(role-scoped SQL views)"]
+    Classify -->|HR_ACTION| Propose["action_propose<br/>(LLM tool-call extraction)"]
+    Classify -->|resuming a confirmed action| PermCheck
+    Classify -->|UNKNOWN| Unknown["unknown"]
+
+    Propose -->|tool proposed| PermCheck["action_permission_check<br/>(permissions.can_use_tool)"]
+    Propose -->|no tool / clarifying question| NoTool["action_no_tool"]
+
+    PermCheck -->|forbidden| Forbidden["action_forbidden"]
+    PermCheck -->|needs human confirmation| NeedsConfirm["action_needs_confirmation<br/>(returns pending_action)"]
+    PermCheck -->|allowed, no confirmation needed| Execute["action_execute<br/>(calls backend API with user's token)"]
+
+    Policy --> Final["generate_final_response"]
+    SQL --> Final
+    Execute --> Final
+    Forbidden --> Final
+    NeedsConfirm --> Final
+    NoTool --> Final
+    Unknown --> Final
+
+    Final --> Audit["audit_log<br/>(writes ai_audit_logs)"]
+    Audit --> Done(["Response to user"])
+```
+
+Notes:
+
+- Each endpoint sets `forced_intent` so `classify_intent` skips the router
+  LLM call when it already knows the route; only the standalone
+  `/chat/router` endpoint (used by the frontend's "Auto" mode) actually
+  invokes the classifier.
+- Conversation history (last 10 messages) is threaded into both
+  `classify_intent` and `action_propose`, so a follow-up like *"its a casual
+  leave"* answering an earlier clarifying question is understood in context
+  instead of being classified as a brand-new, unrelated message.
+- `action_permission_check` calls the exact same `permissions.can_use_tool`
+  that `action_execute` also checks internally before running a tool — one
+  source of truth, checked twice (early exit + defense in depth), never two
+  different policies.
+
 ### Setup
 
 1. Install the extra Python deps (already in `requirements.txt`):
-   `anthropic`, `sentence-transformers`, `chromadb`, `sqlglot`, `httpx`.
+   `google-genai`, `anthropic`, `sentence-transformers`, `chromadb`, `sqlglot`, `httpx`, `langgraph`.
    `sentence-transformers` pulls in `torch`; on an Intel Mac make sure you're
    on Python 3.11/3.12 (torch's last macOS x86_64 wheel is 2.2.2 — there is no
    Python 3.13 x86_64 wheel).
-2. Copy `backend/.env.example` → `backend/.env` and set `ANTHROPIC_API_KEY`
-   to enable generation (RAG answers, SQL generation, action tool-calling,
-   and LLM-based intent routing). Without a key, retrieval/guardrails still
-   run and the endpoints return a clear "AI generation is not configured"
-   message instead of erroring.
+2. Copy `backend/.env.example` → `backend/.env` and set `GEMINI_API_KEY`
+   (get one at [aistudio.google.com](https://aistudio.google.com/apikey)) to
+   enable generation (RAG answers, SQL generation, action tool-calling, and
+   LLM-based intent routing). To use Claude instead, set
+   `AI_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Without a key,
+   retrieval/guardrails still run and the endpoints return a clear "AI
+   generation is not configured" message instead of erroring.
 3. Run the app once — the vector store is built automatically on startup if
    empty. To rebuild it manually after editing policy content:
    `python -m scripts.ingest_policies` (run inside the backend venv/container).
@@ -287,8 +347,10 @@ existing app rather than bolted on as a separate service. See
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude API key; unset = generation disabled, retrieval/guardrails still work |
-| `AI_MODEL_NAME` | Claude model id (default `claude-sonnet-4-5`) |
+| `AI_LLM_PROVIDER` | `gemini` (default) or `anthropic` |
+| `GEMINI_API_KEY` | Gemini API key; used when `AI_LLM_PROVIDER=gemini` |
+| `ANTHROPIC_API_KEY` | Claude API key; used when `AI_LLM_PROVIDER=anthropic` |
+| `AI_MODEL_NAME` | model id for the selected provider (default `gemini-flash-latest`) |
 | `AI_EMBEDDING_MODEL_NAME` | local sentence-transformers model (default `all-MiniLM-L6-v2`) |
 | `AI_VECTOR_STORE_DIR` | on-disk ChromaDB persistence directory |
 | `AI_SQL_MAX_ROWS` | hard cap on rows the SQL agent can return |

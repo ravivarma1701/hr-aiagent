@@ -11,7 +11,7 @@ dependencies:
   API required. Verified directly against this build.
 - **Generation layer** (LLM-written SQL, RAG answer wording, tool-call
   argument extraction, LLM-based intent classification) — requires
-  `ANTHROPIC_API_KEY` to actually invoke Claude. This environment was set up
+  an LLM API key to actually invoke the model. This environment was set up
   without a live key (per the setup decision recorded in
   `ai_architecture.md`), so those cells are marked **pending live run** below
   rather than fabricated. Every endpoint was still exercised end-to-end with
@@ -34,7 +34,7 @@ Live response captured for "How many sick leaves do I get?" with no LLM key
 configured (retrieval-only fallback, verbatim excerpt returned):
 
 ```
-AI generation is not configured (no ANTHROPIC_API_KEY) so this is the most
+AI generation is not configured (no LLM API key) so this is the most
 relevant policy excerpt rather than a generated answer:
 
 "# Leave Policy Every full-time employee is allocated 12 casual leaves, 10
@@ -44,7 +44,7 @@ sources: [{"title": "Leave Policy", "category": "LEAVE", "filename": "seed_polic
 
 This confirms: correct chunk retrieved, correct source metadata returned,
 and the numeric answer (10 sick leaves) is present in the grounding text —
-**pending live run**: whether Claude's generated prose stays faithful to
+**pending live run**: whether the model's generated prose stays faithful to
 that number rather than paraphrasing it incorrectly.
 
 **Prompt-injection check**: the retrieved-chunk path renders chunks inside
@@ -75,7 +75,7 @@ and `v_team_*` are absent from the allowlist, so even if a compromised or
 adversarial prompt convinced the LLM to reference `v_all_leave_requests`,
 `validate_sql` rejects it before execution (never reaches SQLite).
 
-**Pending live run**: whether Claude actually generates a *correct* SELECT
+**Pending live run**: whether the model actually generates a *correct* SELECT
 for each natural-language question (e.g. picks `v_my_employee_projects` and
 not `v_employees_directory` for "show my project assignments"). The
 guardrail layer above is what prevents an *incorrect or malicious* SQL from
@@ -128,7 +128,7 @@ the heuristic is the fallback path, not the primary one.
 
 ## How to re-run with a live key
 
-1. Set `ANTHROPIC_API_KEY` in `backend/.env`.
+1. Set `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY` + `AI_LLM_PROVIDER=anthropic`) in `backend/.env`.
 2. Restart the backend.
 3. Iterate `backend/scripts/eval_dataset.json`, POST each `input` (with the
    right test user's token for its `role`) to `/api/v1/chat/router` first,

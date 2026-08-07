@@ -10,12 +10,26 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { ChatMessage, ChatPanel } from "@/components/ai/chat-panel";
 import {
+  ChatHistoryMessage,
   fetchProfile,
   sendActionChat,
   sendPolicyChat,
   sendRouterChat,
   sendSqlChat,
 } from "@/lib/api";
+
+// How many prior turns to send as context with each new message -- enough
+// for the "answer a clarifying question" case (apply leave -> agent asks
+// for leave type -> user replies "its a casual leave") without letting the
+// payload/token cost grow unbounded over a long session.
+const MAX_HISTORY_MESSAGES = 10;
+
+function toHistory(messages: ChatMessage[]): ChatHistoryMessage[] {
+  return messages
+    .filter((m) => m.content && (m.role === "user" || m.role === "assistant"))
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((m) => ({ role: m.role, content: m.content }));
+}
 
 type Mode = "AUTO" | "POLICY_QA" | "SQL_QUERY" | "HR_ACTION";
 
@@ -112,10 +126,16 @@ export default function AiCopilotPage() {
     text: string,
     confirm?: boolean,
     pendingAction?: ChatMessage["pendingAction"],
-    priorMessageId?: string
+    priorMessageId?: string,
+    history?: ChatHistoryMessage[]
   ) => {
     if (!token) return;
-    const result = await sendActionChat(token, { message: text, confirm, pending_action: pendingAction ?? null });
+    const result = await sendActionChat(token, {
+      message: text,
+      confirm,
+      pending_action: pendingAction ?? null,
+      history: history ?? [],
+    });
     if (result.status === 401) return clearAuthAndRedirect();
     if (!result.ok || !("success" in result.body) || !result.body.success) {
       const content = "Sorry, that action couldn't be completed right now.";
@@ -136,12 +156,17 @@ export default function AiCopilotPage() {
   };
 
   const handleSend = async (text: string) => {
+    // Captured before appendMessage's state update lands, so this is
+    // exactly the conversation prior to the new message -- needed so a
+    // reply like "its a casual leave" can be understood as answering the
+    // assistant's previous clarifying question, not classified in isolation.
+    const history = toHistory(messages);
     appendMessage({ id: newId(), role: "user", content: text });
     setLoading(true);
     try {
       let route: Mode = mode;
       if (mode === "AUTO" && token) {
-        const routed = await sendRouterChat(token, text);
+        const routed = await sendRouterChat(token, text, history);
         if (routed.status === 401) return clearAuthAndRedirect();
         if (routed.ok && "success" in routed.body && routed.body.success) {
           route = routed.body.data.intent as Mode;
@@ -150,7 +175,7 @@ export default function AiCopilotPage() {
 
       if (route === "POLICY_QA") await runPolicy(text);
       else if (route === "SQL_QUERY") await runSql(text);
-      else if (route === "HR_ACTION") await runAction(text);
+      else if (route === "HR_ACTION") await runAction(text, false, null, undefined, history);
       else
         appendMessage({
           id: newId(),

@@ -213,7 +213,7 @@ async def _summarize_rows(question: str, rows: list[dict]) -> str:
     if not rows:
         return "I didn't find any matching records."
     if not is_configured():
-        return f"Found {len(rows)} matching record(s). (Set ANTHROPIC_API_KEY for a natural-language summary.)"
+        return f"Found {len(rows)} matching record(s). (Configure an LLM API key for a natural-language summary.)"
     try:
         import json
 
@@ -241,7 +241,7 @@ async def answer_sql_question(question: str, user: Employee) -> dict:
 
     if not is_configured():
         return {
-            "answer": "AI SQL generation is not configured (no ANTHROPIC_API_KEY set). Please use the regular HRMS pages for this data, or ask an admin to configure the AI layer.",
+            "answer": "AI SQL generation is not configured (no LLM API key set). Please use the regular HRMS pages for this data, or ask an admin to configure the AI layer.",
             "sql": None,
             "rows": [],
         }

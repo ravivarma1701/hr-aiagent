@@ -1427,6 +1427,11 @@ export type ChatRouterResult = {
   reason: string;
 };
 
+export type ChatHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export async function sendPolicyChat(
   token: string,
   message: string
@@ -1453,7 +1458,7 @@ export async function sendSqlChat(
 
 export async function sendActionChat(
   token: string,
-  payload: { message: string; confirm?: boolean; pending_action?: PendingAction | null }
+  payload: { message: string; confirm?: boolean; pending_action?: PendingAction | null; history?: ChatHistoryMessage[] }
 ): Promise<ApiResult<ApiEnvelope<ChatActionResult> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/actions`, {
     method: "POST",
@@ -1465,12 +1470,13 @@ export async function sendActionChat(
 
 export async function sendRouterChat(
   token: string,
-  message: string
+  message: string,
+  history?: ChatHistoryMessage[]
 ): Promise<ApiResult<ApiEnvelope<ChatRouterResult> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/router`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, history }),
   });
   return { ok: response.ok, status: response.status, body: await response.json() };
 }

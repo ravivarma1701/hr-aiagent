@@ -23,7 +23,15 @@ it. Every design choice below follows from that constraint.
 │ FastAPI endpoints — backend/app/api/v1/endpoints/chat.py               │
 │  Depends(get_current_user)  -> Employee (id, role)                    │
 │  Depends(oauth2_scheme)     -> raw bearer token (for tool calls)      │
-│  every call ends with log_ai_interaction() -> ai_audit_logs           │
+│  calls graph.run_chat_graph(forced_intent=...) -- see below            │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│ LangGraph pipeline — backend/app/services/ai/graph.py                 │
+│  load_user_context -> classify_intent -> route ->                     │
+│  {policy_agent | sql_agent_node | action_propose->permission_check->  │
+│   confirm_gate->execute} -> generate_final_response -> audit_log      │
 └───────┬───────────────────────┬───────────────────────┬─────────────────┘
         ▼                       ▼                       ▼
  policy_rag.py            sql_agent.py             action_agent.py
@@ -56,15 +64,93 @@ it. Every design choice below follows from that constraint.
                                                           hrms.db
 ```
 
+## Orchestration: LangGraph (bonus, implemented)
+
+`/chat/policy`, `/chat/sql`, and `/chat/actions` all run through a single
+compiled `langgraph.graph.StateGraph` (`backend/app/services/ai/graph.py`)
+rather than each endpoint calling its agent module directly. This is the
+assignment's suggested pipeline, implemented for real rather than just
+described:
+
+```text
+START -> load_user_context -> classify_intent -> route:
+    ├── policy_agent ──────────────────────────────────────┐
+    ├── sql_agent_node ────────────────────────────────────┤
+    ├── action_propose -> action_permission_check -> route:│
+    │       ├── forbidden ───────────────────────────────┐ │
+    │       ├── needs_confirmation ──────────────────────┤ │
+    │       └── execute ─────────────────────────────────┤ │
+    ├── action_no_tool ──────────────────────────────────┤ │
+    └── unknown ─────────────────────────────────────────┘ │
+                                                             ▼
+                                          generate_final_response -> audit_log -> END
+```
+
+Design notes:
+
+- **Each endpoint sets `forced_intent`** (`POLICY_QA`/`SQL_QUERY`/`HR_ACTION`)
+  when invoking the graph, since it already knows which capability it is —
+  `classify_intent` only calls the LLM-based router when no `forced_intent`
+  is given (that path exists for a future single "auto-route" entry point;
+  today only the standalone `/chat/router` endpoint calls the classifier
+  directly, without the rest of the graph, since it's meant to be a cheap
+  "which agent would handle this" preview, not a full run).
+- **The action branch is decomposed into four separate nodes**
+  (`action_propose` -> `action_permission_check` -> confirm-gate ->
+  `action_execute`) instead of one function, because those are genuinely
+  separate concerns: propose (LLM tool-call extraction, in
+  `action_agent.propose_action`), authorize, gate on human confirmation,
+  execute (`action_agent._execute_tool`). Decomposing them into nodes makes
+  each step independently testable — see `docs/ai_eval_results.md` for the
+  node-level permission tests this enabled — and means a future change
+  (e.g. adding a new confirmation-required tool) touches `permissions.py`
+  only, not a large branching function.
+- **`action_permission_check` calls the exact same `permissions.can_use_tool`**
+  that `action_agent._execute_tool` also calls internally before running a
+  tool. This was a deliberate choice to avoid the classic multi-layer-auth
+  bug: a graph-level permission node that re-implements or approximates the
+  real check can drift from it over time. There is one authorization
+  function; the graph calls it earlier (to short-circuit before wasting a
+  confirmation round-trip on a forbidden action), and the agent calls it
+  again immediately before execution as defense in depth — same function,
+  called twice, not two different policies.
+- **Confirmation is plain state, not LangGraph's `interrupt()`.** LangGraph
+  has a built-in human-in-the-loop primitive (`interrupt()` + a
+  checkpointer that persists the paused run so it can be resumed later from
+  a `thread_id`). This app's chat endpoints are stateless HTTP request/
+  response, and the existing `confirm` / `pending_action` round-trip
+  (client resubmits the exact tool+args the server proposed) already gives
+  the same guarantee — the action that runs is exactly what was shown to
+  the user — without standing up a persistent checkpoint store for what is,
+  per request, a single, short-lived graph run. The graph is compiled with
+  `checkpointer=None`.
+- **Audit logging moved from each endpoint into a single `audit_log` node.**
+  Previously `chat.py` called `log_ai_interaction(...)` once per endpoint,
+  duplicating the same call three times; now it happens once, in the graph,
+  regardless of which branch produced the response. `chat.py` keeps its own
+  `try/except` around `run_chat_graph(...)` purely as an outer safety net —
+  if the graph itself raises before reaching `audit_log` (e.g. a bug in a
+  node), the endpoint still records an `action_status="error"` audit entry
+  and returns a clean 500 instead of leaking a traceback.
+
 ## Model / provider
 
 - **Generation** (RAG answers, NL→SQL, intent extraction/tool-calling,
-  router classification): Anthropic Claude (`claude-sonnet-4-5` by default,
-  configurable via `AI_MODEL_NAME`). Accessed through a small wrapper
-  (`app/services/ai/llm_client.py`) so the rest of the codebase depends on
-  `complete()` / `complete_json()` / `complete_with_tools()`, not the
-  Anthropic SDK directly — a second provider could be added without
-  touching the agents.
+  router classification): Google Gemini by default (`gemini-flash-latest`,
+  configurable via `AI_MODEL_NAME`), with Anthropic Claude available as a
+  drop-in alternative via `AI_LLM_PROVIDER=anthropic`. Accessed through a
+  small wrapper (`app/services/ai/llm_client.py`) so the rest of the
+  codebase depends on `complete()` / `complete_json()` / `complete_with_tools()`,
+  never a provider SDK directly — `llm_client.py` dispatches to
+  `_gemini_*`/`_anthropic_*` internally based on `AI_LLM_PROVIDER`, and the
+  Action Agent's tool schemas are translated (union `type` arrays and `None`
+  enum values stripped) into Gemini's function-calling `Schema` format at
+  call time so `action_agent.py` itself stays provider-agnostic. Gemini's
+  "thinking" token budget is explicitly disabled
+  (`ThinkingConfig(thinking_budget=0)`) for all calls, since these are
+  direct extraction/generation tasks rather than multi-step reasoning, and
+  leaving it on was silently consuming part of `max_output_tokens` and
+  truncating visible answers.
 - **Embeddings**: local `sentence-transformers` (`all-MiniLM-L6-v2`, 384-dim,
   runs on CPU/MPS, no API key or network call at query time). Chosen so
   Policy RAG retrieval works even before an LLM key is configured, and so
@@ -74,7 +160,7 @@ it. Every design choice below follows from that constraint.
   Cosine similarity. We always pass in our own embeddings — Chroma is used
   purely as a persistent nearest-neighbour index.
 
-If `ANTHROPIC_API_KEY` is unset, every endpoint still returns a real,
+If no API key is configured for the selected provider, every endpoint still returns a real,
 correctly-shaped response instead of erroring: Policy RAG returns the raw
 best-matching excerpt, the SQL Agent and Action Agent explain that
 generation isn't configured, and the router falls back to a keyword
@@ -139,8 +225,9 @@ role — see Security Decisions below.
 
 ### 3. HR Action Agent (`action_agent.py`, `api_tools.py`, `permissions.py`)
 
-- Intent + argument extraction uses Claude's native tool-calling. The tool
-  list handed to the model is pre-filtered to the current role
+- Intent + argument extraction uses the LLM's native tool-calling
+  (`action_agent.propose_action`, run as the graph's `action_propose` node).
+  The tool list handed to the model is pre-filtered to the current role
   (`_tools_for_role`), so an Employee's model call literally cannot see an
   `approve_leave_request` tool definition.
 - `api_tools.py` is the only place that talks to the rest of the app, and it
@@ -171,9 +258,9 @@ role — see Security Decisions below.
 ### 4. Router (`intent_router.py`)
 
 Optional per the spec; implemented because a single chat box is a much
-better demo than three separate boxes. Uses Claude when configured
-(`complete_json`), else a keyword-heuristic fallback so `/chat/router`
-still works offline. The heuristic checks action verbs first, then
+better demo than three separate boxes. Uses the configured LLM
+(`complete_json`) when available, else a keyword-heuristic fallback so
+`/chat/router` still works offline. The heuristic checks action verbs first, then
 data-lookup phrasing, then policy phrasing last — deliberately in that
 order, because a message like *"Who is assigned to the **HR Policy**
 Copilot project?"* contains the substring "policy" inside a proper noun and
@@ -182,8 +269,10 @@ first.
 
 ### 5. Audit logging (`audit.py`, `ai_audit_log.py`, migration `0017`)
 
-Every one of the four endpoints calls `log_ai_interaction()` exactly once,
-success or failure, recording: `user_id`, `role`, the original `message`,
+Every one of the four endpoints results in exactly one
+`log_ai_interaction()` call, success or failure — for `/policy`, `/sql`,
+`/actions` this happens in the graph's `audit_log` node; `/router` calls it
+directly since it doesn't run the graph. Each entry records: `user_id`, `role`, the original `message`,
 detected `intent`, `tool_name` used (agent/API tool), `action_status`, a
 JSON list of accessed/modified record ids, an `error_reason` on failure, and
 `latency_ms`. Access tokens, passwords, and raw payroll/bank values are
@@ -206,11 +295,11 @@ never written to this table — only identifiers.
   stub endpoints are untouched); the frontend keeps the conversation in
   React state for the current page load.
 - No streaming; each request blocks until the LLM call(s) complete.
-- LangGraph, OpenTelemetry/LangSmith tracing, and the AI usage dashboard
-  bonuses were not implemented, to keep the four core capabilities and audit
-  logging solid within scope. Human-in-the-loop confirmation and a small
-  eval dataset (`docs/ai_eval_results.md`, `backend/scripts/eval_dataset.json`)
-  were implemented as the two bonuses.
+- OpenTelemetry/LangSmith tracing and the AI usage dashboard bonuses were
+  not implemented, to keep the four core capabilities and audit logging
+  solid within scope. LangGraph orchestration, human-in-the-loop
+  confirmation, and a small eval dataset (`docs/ai_eval_results.md`,
+  `backend/scripts/eval_dataset.json`) were implemented as bonuses.
 
 ## Security decisions worth calling out
 

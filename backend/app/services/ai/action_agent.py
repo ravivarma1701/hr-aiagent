@@ -1,22 +1,28 @@
 """HR Task Automation Agent.
 
-Intent/argument extraction is done via Anthropic tool-calling: the model is
-only ever offered the subset of tools the current user's role is permitted
-to use (permissions.py), and every tool call is re-checked against the same
+Intent/argument extraction is done via LLM tool-calling: the model is only
+ever offered the subset of tools the current user's role is permitted to
+use (permissions.py), and every tool call is re-checked against the same
 permission map before execution as a second, non-bypassable line of defense.
 Execution never touches the database directly -- see api_tools.py.
+
+This module exposes small, independently-callable pieces
+(``propose_action``, ``_execute_tool``, ``_describe_proposed_action``)
+rather than one monolithic entry point, because they're used as separate
+nodes in the LangGraph pipeline (graph.py) -- propose, permission-check,
+confirm-gate, and execute are distinct steps in that graph, not one
+function call.
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-from app.models.employee import Employee
 from app.models.enums import Role
 from app.services.ai import api_tools
 from app.services.ai.api_tools import ApiToolError
-from app.services.ai.llm_client import AIUnavailableError, complete_with_tools, is_configured
-from app.services.ai.permissions import GENERIC_REFUSAL, can_use_tool, requires_confirmation, TOOL_PERMISSIONS
+from app.services.ai.llm_client import AIUnavailableError, LLMMessage, complete_with_tools, is_configured
+from app.services.ai.permissions import GENERIC_REFUSAL, can_use_tool, TOOL_PERMISSIONS
 
 TOOL_SCHEMAS: dict[str, dict] = {
     "create_leave_request": {
@@ -251,67 +257,37 @@ async def _execute_tool(tool_name: str, args: dict, role: Role, access_token: st
     return {"answer": _summarize_result(tool_name, args, result), "action": tool_name, "status": "completed", "result": result, "pending_action": None}
 
 
-async def handle_action_request(
-    message: str,
-    user: Employee,
-    access_token: str,
-    confirm: bool = False,
-    pending_action: dict | None = None,
-) -> dict:
-    role = user.role
+async def propose_action(message: str, role: Role, history: list[LLMMessage] | None = None) -> dict:
+    """LLM tool-call extraction only -- no permission check, no execution.
 
-    if confirm and pending_action:
-        tool_name = pending_action.get("tool_name")
-        args = pending_action.get("arguments") or {}
-        return await _execute_tool(tool_name, args, role, access_token)
+    `history` is the prior conversation turns (if any), oldest first, NOT
+    including `message` itself. It's what lets a reply like "its a casual
+    leave" resolve an earlier clarifying question ("which leave type?")
+    instead of being interpreted as a brand new, context-free message.
 
+    Returns {"text": str, "tool_name": str | None, "args": dict}. The
+    caller (graph.py) is responsible for the permission check, the
+    confirmation gate, and execution -- each is a distinct node in the
+    LangGraph pipeline so they can be tested and audited independently.
+    """
     if not is_configured():
         return {
-            "answer": "AI task automation is not configured (no ANTHROPIC_API_KEY set). Please use the regular HRMS pages for this action, or ask an admin to configure the AI layer.",
-            "action": None,
-            "status": "unavailable",
-            "result": None,
-            "pending_action": None,
+            "text": "AI task automation is not configured (no LLM API key set). Please use the regular HRMS pages for this action, or ask an admin to configure the AI layer.",
+            "tool_name": None,
+            "args": {},
         }
 
     tools = _tools_for_role(role)
     system = _SYSTEM_PROMPT.format(role=role.value, today=date.today().isoformat())
+    messages = [*(history or []), LLMMessage(role="user", content=message)]
 
     try:
-        generation = await complete_with_tools(system=system, user_prompt=message, tools=tools)
+        generation = await complete_with_tools(system=system, messages=messages, tools=tools)
     except AIUnavailableError:
-        return {
-            "answer": "AI task automation is currently unavailable.",
-            "action": None,
-            "status": "unavailable",
-            "result": None,
-            "pending_action": None,
-        }
+        return {"text": "AI task automation is currently unavailable.", "tool_name": None, "args": {}}
 
     if not generation["tool_calls"]:
-        return {
-            "answer": generation["text"] or "I'm not sure how to help with that.",
-            "action": None,
-            "status": "no_action",
-            "result": None,
-            "pending_action": None,
-        }
+        return {"text": generation["text"] or "I'm not sure how to help with that.", "tool_name": None, "args": {}}
 
     call = generation["tool_calls"][0]
-    tool_name = call["name"]
-    args = call["input"] or {}
-
-    permission = can_use_tool(role, tool_name)
-    if not permission.allowed:
-        return {"answer": permission.reason or GENERIC_REFUSAL, "action": tool_name, "status": "forbidden", "result": None, "pending_action": None}
-
-    if requires_confirmation(tool_name):
-        return {
-            "answer": _describe_proposed_action(tool_name, args),
-            "action": tool_name,
-            "status": "pending_confirmation",
-            "result": None,
-            "pending_action": {"tool_name": tool_name, "arguments": args},
-        }
-
-    return await _execute_tool(tool_name, args, role, access_token)
+    return {"text": generation["text"], "tool_name": call["name"], "args": call["input"] or {}}

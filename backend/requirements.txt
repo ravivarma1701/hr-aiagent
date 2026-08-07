@@ -16,9 +16,11 @@ pypdf==5.1.0
 reportlab==4.2.5
 
 # AI layer (Phase 4)
+google-genai==2.16.0
 anthropic==0.69.0
 sentence-transformers==3.3.1
 chromadb==0.5.23
 sqlglot==25.32.1
 httpx==0.28.1
+langgraph==1.2.10
 numpy<2

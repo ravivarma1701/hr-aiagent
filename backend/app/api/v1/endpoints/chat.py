@@ -1,5 +1,3 @@
-import time
-
 import structlog
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
@@ -16,13 +14,19 @@ from app.schemas.chat import (
     ChatSessionCreate,
     ChatSQLRequest,
 )
-from app.services.ai import action_agent, intent_router, policy_rag, sql_agent
+from app.services.ai import intent_router
 from app.services.ai.audit import log_ai_interaction
+from app.services.ai.graph import run_chat_graph
+from app.services.ai.llm_client import LLMMessage
 from app.services.auth import get_current_user, oauth2_scheme
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+def _to_llm_messages(history: list) -> list[LLMMessage]:
+    return [LLMMessage(role=item.role, content=item.content) for item in history]
 
 
 @router.post("/sessions")
@@ -61,10 +65,11 @@ async def chat_policy(
 ):
     """Policy RAG Assistant: answers HR policy questions grounded in the
     policy library. Available to every role -- policy Q&A has no access
-    restriction in the permissions matrix."""
-    started = time.monotonic()
+    restriction in the permissions matrix. Runs through the LangGraph
+    pipeline (graph.py) with intent forced to POLICY_QA; the graph's own
+    audit_log node records the interaction."""
     try:
-        result = await policy_rag.answer_policy_question(payload.message)
+        result = await run_chat_graph(db=db, user=current_user, message=payload.message, forced_intent="POLICY_QA")
     except Exception:
         logger.exception("policy_chat_failed", user_id=current_user.id)
         await log_ai_interaction(
@@ -76,13 +81,6 @@ async def chat_policy(
             content=error_response("POLICY_CHAT_FAILED", "Something went wrong answering that question."),
         )
 
-    latency_ms = int((time.monotonic() - started) * 1000)
-    await log_ai_interaction(
-        db, current_user, payload.message, intent="POLICY_QA", tool_name="policy_rag",
-        action_status="grounded" if result["grounded"] else "insufficient_context",
-        records_accessed=[s["title"] for s in result["sources"]],
-        latency_ms=latency_ms,
-    )
     return success_response({"answer": result["answer"], "sources": result["sources"]})
 
 
@@ -92,10 +90,10 @@ async def chat_sql(
     current_user: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """SQL Agent: read-only, role-scoped natural-language data lookups."""
-    started = time.monotonic()
+    """SQL Agent: read-only, role-scoped natural-language data lookups. Runs
+    through the LangGraph pipeline with intent forced to SQL_QUERY."""
     try:
-        result = await sql_agent.answer_sql_question(payload.message, current_user)
+        result = await run_chat_graph(db=db, user=current_user, message=payload.message, forced_intent="SQL_QUERY")
     except Exception:
         logger.exception("sql_chat_failed", user_id=current_user.id)
         await log_ai_interaction(
@@ -107,13 +105,6 @@ async def chat_sql(
             content=error_response("SQL_CHAT_FAILED", "Something went wrong answering that question."),
         )
 
-    latency_ms = int((time.monotonic() - started) * 1000)
-    action_status = "completed" if result["rows"] else ("blocked" if result["sql"] is None else "no_results")
-    row_ids = [row.get("id") for row in result["rows"] if isinstance(row, dict) and "id" in row][:50]
-    await log_ai_interaction(
-        db, current_user, payload.message, intent="SQL_QUERY", tool_name="sql_agent",
-        action_status=action_status, records_accessed=row_ids, latency_ms=latency_ms,
-    )
     return success_response({"answer": result["answer"], "sql": result["sql"], "rows": result["rows"]})
 
 
@@ -126,14 +117,19 @@ async def chat_actions(
 ):
     """HR Task Automation Agent: interprets the message into a backend API
     tool call made with the current user's own credentials. Never mutates
-    the database directly."""
-    started = time.monotonic()
+    the database directly. Runs through the LangGraph pipeline with intent
+    forced to HR_ACTION; confirmation round-trips (confirm/pending_action)
+    are handled by the graph's action_permission_check/action_confirm
+    branches."""
     pending_action = payload.pending_action.model_dump() if payload.pending_action else None
     try:
-        result = await action_agent.handle_action_request(
-            message=payload.message,
+        result = await run_chat_graph(
+            db=db,
             user=current_user,
             access_token=access_token,
+            message=payload.message,
+            history=_to_llm_messages(payload.history),
+            forced_intent="HR_ACTION",
             confirm=payload.confirm,
             pending_action=pending_action,
         )
@@ -148,15 +144,6 @@ async def chat_actions(
             content=error_response("ACTION_CHAT_FAILED", "Something went wrong performing that action."),
         )
 
-    latency_ms = int((time.monotonic() - started) * 1000)
-    result_payload = result.get("result")
-    records_accessed = None
-    if isinstance(result_payload, dict) and "id" in result_payload:
-        records_accessed = [result_payload["id"]]
-    await log_ai_interaction(
-        db, current_user, payload.message, intent="HR_ACTION", tool_name=result.get("action"),
-        action_status=result["status"], records_accessed=records_accessed, latency_ms=latency_ms,
-    )
     return success_response(result)
 
 
@@ -166,9 +153,23 @@ async def chat_router(
     current_user: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Optional unified router: classifies intent so a frontend can dispatch
-    to the right agent without asking the user to pick one."""
-    result = await intent_router.classify_intent(payload.message)
+    """Optional lightweight classifier: reports which agent a message would
+    route to, without running the full pipeline. The /policy, /sql, and
+    /actions endpoints do their own routing via the LangGraph pipeline
+    (graph.py) and don't call this."""
+    try:
+        result = await intent_router.classify_intent(payload.message, _to_llm_messages(payload.history))
+    except Exception:
+        logger.exception("router_chat_failed", user_id=current_user.id)
+        await log_ai_interaction(
+            db, current_user, payload.message, intent=None, tool_name="router",
+            action_status="error", error_reason="unhandled_exception",
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=error_response("ROUTER_CHAT_FAILED", "Something went wrong classifying that message."),
+        )
+
     await log_ai_interaction(
         db, current_user, payload.message, intent=result["intent"], tool_name="router",
         action_status="classified",
