@@ -9,6 +9,8 @@ from app.models import (
     ai_audit_log,
     announcement,
     attendance_log,
+    chat_message,
+    chat_session,
     department,
     employee,
     employee_document,

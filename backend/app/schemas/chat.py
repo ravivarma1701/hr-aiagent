@@ -1,25 +1,25 @@
-from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
+from typing import Literal
 
-
-class ChatHistoryMessage(BaseModel):
-    role: str  # "user" | "assistant"
-    content: str = Field(max_length=4000)
-
-    @field_validator("role")
-    @classmethod
-    def _validate_role(cls, value: str) -> str:
-        if value not in {"user", "assistant"}:
-            raise ValueError("role must be 'user' or 'assistant'")
-        return value
+from pydantic import BaseModel, Field
 
 
 class ChatSessionCreate(BaseModel):
-    title: str = Field(min_length=3, max_length=120)
+    title: str = Field(default="AI Copilot Conversation", min_length=1, max_length=120)
 
 
-class ChatMessageCreate(BaseModel):
-    role: str = Field(min_length=3, max_length=20)
-    content: str = Field(min_length=1, max_length=4000)
+class ChatSessionOut(BaseModel):
+    id: int
+    title: str
+    created_at: datetime
+
+
+class ChatMessageOut(BaseModel):
+    id: int
+    role: str
+    content: str
+    route: str | None = None
+    created_at: datetime
 
 
 # --- Phase 4: AI copilot chat endpoints ------------------------------------
@@ -27,6 +27,7 @@ class ChatMessageCreate(BaseModel):
 
 class ChatPolicyRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+    session_id: int | None = None
 
 
 class PolicySource(BaseModel):
@@ -42,6 +43,7 @@ class ChatPolicyResponse(BaseModel):
 
 class ChatSQLRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+    session_id: int | None = None
 
 
 class ChatSQLResponse(BaseModel):
@@ -59,7 +61,7 @@ class ChatActionRequest(BaseModel):
     message: str = Field(default="", max_length=2000)
     confirm: bool = False
     pending_action: PendingAction | None = None
-    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
+    session_id: int | None = None
 
 
 class ChatActionResponse(BaseModel):
@@ -72,10 +74,22 @@ class ChatActionResponse(BaseModel):
 
 class ChatRouterRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
-    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
+    session_id: int | None = None
 
 
 class ChatRouterResponse(BaseModel):
     intent: str
     confidence: float
     reason: str
+
+
+class ChatStreamRequest(BaseModel):
+    """Union of what /policy, /sql, /actions each need -- forced_intent
+    picks which agent handles the message (Auto-mode classification still
+    happens via a separate /chat/router call before this one, unchanged)."""
+
+    message: str = Field(default="", max_length=2000)
+    forced_intent: Literal["POLICY_QA", "SQL_QUERY", "HR_ACTION"]
+    session_id: int | None = None
+    confirm: bool = False
+    pending_action: PendingAction | None = None

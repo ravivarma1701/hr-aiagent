@@ -10,26 +10,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { ChatMessage, ChatPanel } from "@/components/ai/chat-panel";
 import {
-  ChatHistoryMessage,
+  ensureChatSession,
+  fetchChatSessionMessages,
   fetchProfile,
-  sendActionChat,
-  sendPolicyChat,
   sendRouterChat,
-  sendSqlChat,
+  streamChat,
 } from "@/lib/api";
-
-// How many prior turns to send as context with each new message -- enough
-// for the "answer a clarifying question" case (apply leave -> agent asks
-// for leave type -> user replies "its a casual leave") without letting the
-// payload/token cost grow unbounded over a long session.
-const MAX_HISTORY_MESSAGES = 10;
-
-function toHistory(messages: ChatMessage[]): ChatHistoryMessage[] {
-  return messages
-    .filter((m) => m.content && (m.role === "user" || m.role === "assistant"))
-    .slice(-MAX_HISTORY_MESSAGES)
-    .map((m) => ({ role: m.role, content: m.content }));
-}
 
 type Mode = "AUTO" | "POLICY_QA" | "SQL_QUERY" | "HR_ACTION";
 
@@ -50,8 +36,10 @@ export default function AiCopilotPage() {
   const [mode, setMode] = useState<Mode>("AUTO");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<string | null>(null);
   const [confirmingMessageId, setConfirmingMessageId] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
+  const [sessionId, setSessionId] = useState<number | null>(null);
   const router = useRouter();
 
   const token = useMemo(() => {
@@ -75,6 +63,28 @@ export default function AiCopilotPage() {
           setName(profileResult.body.data.name);
           setRole(profileResult.body.data.role);
         }
+
+        // Get-or-create this user's one continuous session, then hydrate
+        // the transcript so far (plain text only -- source chips/SQL
+        // tables/action cards aren't persisted, only used live).
+        const sessionResult = await ensureChatSession(token);
+        if (sessionResult.status === 401) return clearAuthAndRedirect();
+        if (sessionResult.ok && "success" in sessionResult.body && sessionResult.body.success) {
+          const id = sessionResult.body.data.id;
+          setSessionId(id);
+
+          const messagesResult = await fetchChatSessionMessages(token, id);
+          if (messagesResult.ok && "success" in messagesResult.body && messagesResult.body.success) {
+            setMessages(
+              messagesResult.body.data.map((m) => ({
+                id: String(m.id),
+                role: m.role,
+                content: m.content,
+                route: m.route ?? undefined,
+              }))
+            );
+          }
+        }
       } finally {
         setProfileLoading(false);
       }
@@ -89,84 +99,81 @@ export default function AiCopilotPage() {
 
   const runPolicy = async (text: string) => {
     if (!token) return;
-    const result = await sendPolicyChat(token, text);
-    if (result.status === 401) return clearAuthAndRedirect();
-    if (!result.ok || !("success" in result.body) || !result.body.success) {
-      appendMessage({ id: newId(), role: "assistant", route: "POLICY_QA", content: "Sorry, I couldn't answer that right now.", isError: true });
-      return;
-    }
-    appendMessage({
-      id: newId(),
-      role: "assistant",
-      route: "POLICY_QA",
-      content: result.body.data.answer,
-      sources: result.body.data.sources,
-    });
+    await streamChat(
+      token,
+      { message: text, forcedIntent: "POLICY_QA", sessionId },
+      {
+        onProgress: setLoadingStage,
+        onUnauthorized: clearAuthAndRedirect,
+        onError: () =>
+          appendMessage({ id: newId(), role: "assistant", route: "POLICY_QA", content: "Sorry, I couldn't answer that right now.", isError: true }),
+        onFinal: (data) =>
+          appendMessage({ id: newId(), role: "assistant", route: "POLICY_QA", content: data.answer, sources: data.sources }),
+      }
+    );
   };
 
   const runSql = async (text: string) => {
     if (!token) return;
-    const result = await sendSqlChat(token, text);
-    if (result.status === 401) return clearAuthAndRedirect();
-    if (!result.ok || !("success" in result.body) || !result.body.success) {
-      appendMessage({ id: newId(), role: "assistant", route: "SQL_QUERY", content: "Sorry, I couldn't answer that right now.", isError: true });
-      return;
-    }
-    appendMessage({
-      id: newId(),
-      role: "assistant",
-      route: "SQL_QUERY",
-      content: result.body.data.answer,
-      sql: result.body.data.sql,
-      rows: result.body.data.rows,
-    });
+    await streamChat(
+      token,
+      { message: text, forcedIntent: "SQL_QUERY", sessionId },
+      {
+        onProgress: setLoadingStage,
+        onUnauthorized: clearAuthAndRedirect,
+        onError: () =>
+          appendMessage({ id: newId(), role: "assistant", route: "SQL_QUERY", content: "Sorry, I couldn't answer that right now.", isError: true }),
+        onFinal: (data) =>
+          appendMessage({ id: newId(), role: "assistant", route: "SQL_QUERY", content: data.answer, sql: data.sql, rows: data.rows }),
+      }
+    );
   };
 
   const runAction = async (
     text: string,
     confirm?: boolean,
     pendingAction?: ChatMessage["pendingAction"],
-    priorMessageId?: string,
-    history?: ChatHistoryMessage[]
+    priorMessageId?: string
   ) => {
     if (!token) return;
-    const result = await sendActionChat(token, {
-      message: text,
-      confirm,
-      pending_action: pendingAction ?? null,
-      history: history ?? [],
-    });
-    if (result.status === 401) return clearAuthAndRedirect();
-    if (!result.ok || !("success" in result.body) || !result.body.success) {
-      const content = "Sorry, that action couldn't be completed right now.";
-      if (priorMessageId) updateMessage(priorMessageId, { content, isError: true, status: "error" });
-      else appendMessage({ id: newId(), role: "assistant", route: "HR_ACTION", content, isError: true });
-      return;
-    }
-    const data = result.body.data;
-    const patch: Partial<ChatMessage> = {
-      content: data.answer,
-      action: data.action,
-      status: data.status,
-      result: data.result,
-      pendingAction: data.pending_action,
-    };
-    if (priorMessageId) updateMessage(priorMessageId, patch);
-    else appendMessage({ id: newId(), role: "assistant", route: "HR_ACTION", ...patch } as ChatMessage);
+    await streamChat(
+      token,
+      { message: text, forcedIntent: "HR_ACTION", sessionId, confirm, pendingAction: pendingAction ?? null },
+      {
+        onProgress: setLoadingStage,
+        onUnauthorized: clearAuthAndRedirect,
+        onError: () => {
+          const content = "Sorry, that action couldn't be completed right now.";
+          if (priorMessageId) updateMessage(priorMessageId, { content, isError: true, status: "error" });
+          else appendMessage({ id: newId(), role: "assistant", route: "HR_ACTION", content, isError: true });
+        },
+        onFinal: (data) => {
+          const patch: Partial<ChatMessage> = {
+            content: data.answer,
+            action: data.action,
+            status: data.status,
+            result: data.result,
+            pendingAction: data.pending_action,
+          };
+          if (priorMessageId) updateMessage(priorMessageId, patch);
+          else appendMessage({ id: newId(), role: "assistant", route: "HR_ACTION", ...patch } as ChatMessage);
+        },
+      }
+    );
   };
 
   const handleSend = async (text: string) => {
-    // Captured before appendMessage's state update lands, so this is
-    // exactly the conversation prior to the new message -- needed so a
-    // reply like "its a casual leave" can be understood as answering the
-    // assistant's previous clarifying question, not classified in isolation.
-    const history = toHistory(messages);
     appendMessage({ id: newId(), role: "user", content: text });
     setLoading(true);
+    setLoadingStage(null);
     try {
       let route: Mode = mode;
       if (mode === "AUTO" && token) {
-        const routed = await sendRouterChat(token, text, history);
+        // Session-backed history (not client-resent) means the router can
+        // still understand a reply like "its a casual leave" as answering
+        // the assistant's previous clarifying question, not an isolated
+        // new message.
+        const routed = await sendRouterChat(token, text, sessionId);
         if (routed.status === 401) return clearAuthAndRedirect();
         if (routed.ok && "success" in routed.body && routed.body.success) {
           route = routed.body.data.intent as Mode;
@@ -175,7 +182,7 @@ export default function AiCopilotPage() {
 
       if (route === "POLICY_QA") await runPolicy(text);
       else if (route === "SQL_QUERY") await runSql(text);
-      else if (route === "HR_ACTION") await runAction(text, false, null, undefined, history);
+      else if (route === "HR_ACTION") await runAction(text);
       else
         appendMessage({
           id: newId(),
@@ -184,6 +191,7 @@ export default function AiCopilotPage() {
         });
     } finally {
       setLoading(false);
+      setLoadingStage(null);
     }
   };
 
@@ -195,6 +203,7 @@ export default function AiCopilotPage() {
       await runAction("", true, message.pendingAction, messageId);
     } finally {
       setConfirmingMessageId(null);
+      setLoadingStage(null);
     }
   };
 
@@ -203,11 +212,11 @@ export default function AiCopilotPage() {
   };
 
   return (
-    <main className="flex min-h-screen">
+    <main className="flex h-screen overflow-hidden">
       <Sidebar />
-      <section className="flex w-full flex-col">
+      <section className="flex w-full flex-col overflow-hidden">
         <Topbar name={name} title="AI Copilot" />
-        <div className="flex flex-1 flex-col gap-4 p-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 p-6">
           <Card>
             <CardHeader className="flex flex-row items-center gap-2 space-y-0">
               <Bot className="h-5 w-5 text-primary" />
@@ -246,6 +255,7 @@ export default function AiCopilotPage() {
                 messages={messages}
                 onSend={handleSend}
                 loading={loading}
+                loadingStage={loadingStage}
                 confirmingMessageId={confirmingMessageId}
                 onConfirmAction={handleConfirm}
                 onCancelAction={handleCancel}

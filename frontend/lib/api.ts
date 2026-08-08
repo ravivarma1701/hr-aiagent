@@ -1427,43 +1427,88 @@ export type ChatRouterResult = {
   reason: string;
 };
 
-export type ChatHistoryMessage = {
+export type ChatSessionInfo = {
+  id: number;
+  title: string;
+  created_at: string;
+};
+
+export type ChatSessionMessage = {
+  id: number;
   role: "user" | "assistant";
   content: string;
+  route: "POLICY_QA" | "SQL_QUERY" | "HR_ACTION" | "UNKNOWN" | null;
+  created_at: string;
 };
+
+/** Get-or-create the current user's one continuous AI Copilot session.
+ * Idempotent -- safe to call on every page load. */
+export async function ensureChatSession(
+  token: string
+): Promise<ApiResult<ApiEnvelope<ChatSessionInfo> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({}),
+  });
+  return { ok: response.ok, status: response.status, body: await response.json() };
+}
+
+export async function fetchChatSessionMessages(
+  token: string,
+  sessionId: number
+): Promise<ApiResult<ApiEnvelope<ChatSessionMessage[]> | { detail?: unknown }>> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${sessionId}/messages`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  return { ok: response.ok, status: response.status, body: await response.json() };
+}
 
 export async function sendPolicyChat(
   token: string,
-  message: string
+  message: string,
+  sessionId?: number | null
 ): Promise<ApiResult<ApiEnvelope<ChatPolicyResult> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/policy`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, session_id: sessionId ?? null }),
   });
   return { ok: response.ok, status: response.status, body: await response.json() };
 }
 
 export async function sendSqlChat(
   token: string,
-  message: string
+  message: string,
+  sessionId?: number | null
 ): Promise<ApiResult<ApiEnvelope<ChatSQLResult> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/sql`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, session_id: sessionId ?? null }),
   });
   return { ok: response.ok, status: response.status, body: await response.json() };
 }
 
 export async function sendActionChat(
   token: string,
-  payload: { message: string; confirm?: boolean; pending_action?: PendingAction | null; history?: ChatHistoryMessage[] }
+  payload: {
+    message: string;
+    confirm?: boolean;
+    pending_action?: PendingAction | null;
+    sessionId?: number | null;
+  }
 ): Promise<ApiResult<ApiEnvelope<ChatActionResult> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/actions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      message: payload.message,
+      confirm: payload.confirm,
+      pending_action: payload.pending_action ?? null,
+      session_id: payload.sessionId ?? null,
+    }),
   });
   return { ok: response.ok, status: response.status, body: await response.json() };
 }
@@ -1471,12 +1516,97 @@ export async function sendActionChat(
 export async function sendRouterChat(
   token: string,
   message: string,
-  history?: ChatHistoryMessage[]
+  sessionId?: number | null
 ): Promise<ApiResult<ApiEnvelope<ChatRouterResult> | { detail?: unknown }>> {
   const response = await fetch(`${API_BASE}/api/v1/chat/router`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, session_id: sessionId ?? null }),
   });
   return { ok: response.ok, status: response.status, body: await response.json() };
+}
+
+// --- Streaming chat (stage-progress events) --------------------------------
+
+/** Same shape graph.py's _finalize_response returns -- the union of what
+ * /policy, /sql, and /actions each need. */
+export type ChatStreamFinalData = {
+  answer: string;
+  sources: PolicySource[];
+  sql: string | null;
+  rows: Record<string, unknown>[];
+  action: string | null;
+  status: string;
+  result: Record<string, unknown> | Record<string, unknown>[] | null;
+  pending_action: PendingAction | null;
+};
+
+export async function streamChat(
+  token: string,
+  payload: {
+    message: string;
+    forcedIntent: "POLICY_QA" | "SQL_QUERY" | "HR_ACTION";
+    sessionId?: number | null;
+    confirm?: boolean;
+    pendingAction?: PendingAction | null;
+  },
+  handlers: {
+    onProgress?: (stage: string) => void;
+    onFinal: (data: ChatStreamFinalData) => void;
+    onError?: (message: string) => void;
+    onUnauthorized?: () => void;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      message: payload.message,
+      forced_intent: payload.forcedIntent,
+      session_id: payload.sessionId ?? null,
+      confirm: payload.confirm ?? false,
+      pending_action: payload.pendingAction ?? null,
+    }),
+  });
+
+  if (response.status === 401) {
+    handlers.onUnauthorized?.();
+    return;
+  }
+  if (!response.ok || !response.body) {
+    handlers.onError?.("Request failed.");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const rawEvent = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+
+      if (rawEvent.startsWith("data:")) {
+        const jsonText = rawEvent.slice(5).trim();
+        if (jsonText) {
+          try {
+            const event = JSON.parse(jsonText);
+            if (event.type === "progress") handlers.onProgress?.(event.stage);
+            else if (event.type === "final") handlers.onFinal(event.data);
+            else if (event.type === "error") handlers.onError?.(event.message ?? "Something went wrong.");
+          } catch {
+            // Malformed/partial chunk -- skip rather than crash the stream reader.
+          }
+        }
+      }
+
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
 }

@@ -1,8 +1,14 @@
 """Classifies a chat message into POLICY_QA / SQL_QUERY / HR_ACTION / UNKNOWN.
 
-Uses the LLM when configured (more accurate for phrasing it hasn't seen
-before), and always falls back to a keyword heuristic so /chat/router keeps
-working even without an API key.
+Three-tier cascade:
+1. Semantic routing (local embedding similarity, semantic_router.py) --
+   only for a message with no prior conversation history, since it looks
+   at the message in isolation. Free, ~10-50ms, no API call.
+2. The LLM (complete_json) when configured -- used whenever there IS
+   history (it can actually use that context) or semantic routing wasn't
+   confident. More accurate for phrasing the examples don't cover.
+3. A keyword heuristic, so /chat/router keeps working even without an API
+   key.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ import re
 
 import structlog
 
+from app.services.ai import semantic_router
 from app.services.ai.llm_client import LLMMessage, complete_json, is_configured
 
 logger = structlog.get_logger()
@@ -78,6 +85,19 @@ def _build_router_prompt(message: str, history: list[LLMMessage] | None) -> str:
 
 
 async def classify_intent(message: str, history: list[LLMMessage] | None = None) -> dict:
+    if not history:
+        try:
+            semantic_match = semantic_router.classify(message)
+        except Exception:
+            # Same contract as the LLM path below: a broken embedding model
+            # is "no confident match", not a crashed request.
+            logger.warning("semantic_routing_failed", exc_info=True)
+            semantic_match = None
+
+        if semantic_match is not None:
+            intent, similarity = semantic_match
+            return {"intent": intent, "confidence": similarity, "reason": "semantic routing match"}
+
     if is_configured():
         try:
             prompt = _build_router_prompt(message, history)

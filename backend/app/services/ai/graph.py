@@ -349,6 +349,60 @@ def _build_graph():
 
 _compiled_graph = _build_graph()
 
+# Friendly labels for the assignment's "Streaming Chat Responses" bonus
+# (stage-progress, not token-level text -- see docs/ai_architecture.md).
+# Nodes not listed here (e.g. load_user_context, generate_final_response,
+# audit_log) are internal bookkeeping and don't surface a stage update.
+NODE_STAGE_LABELS: dict[str, str] = {
+    "classify_intent": "Understanding your request...",
+    "policy_agent": "Searching HR policies...",
+    "sql_agent_node": "Looking up the data...",
+    "action_propose": "Figuring out what to do...",
+    "action_permission_check": "Checking permissions...",
+    "action_needs_confirmation": "Waiting for your confirmation...",
+    "action_execute": "Calling the backend API...",
+    "action_forbidden": "Checking permissions...",
+    "action_no_tool": "Understanding your request...",
+    "unknown": "Understanding your request...",
+}
+
+
+def _build_initial_state(
+    *,
+    db,
+    user: Employee,
+    access_token: str,
+    message: str,
+    history: list[LLMMessage] | None,
+    forced_intent: str | None,
+    confirm: bool,
+    pending_action: dict | None,
+) -> ChatState:
+    return {
+        "db": db,
+        "user": user,
+        "access_token": access_token,
+        "message": message,
+        "history": history or [],
+        "forced_intent": forced_intent,
+        "confirm": confirm,
+        "pending_action_in": pending_action,
+        "started_at": time.monotonic(),
+    }
+
+
+def _finalize_response(state: dict) -> dict:
+    return {
+        "answer": state.get("answer", ""),
+        "sources": state.get("sources", []),
+        "sql": state.get("sql"),
+        "rows": state.get("rows", []),
+        "action": state.get("action"),
+        "status": state.get("status", "n/a"),
+        "result": state.get("result"),
+        "pending_action": state.get("pending_action"),
+    }
+
 
 async def run_chat_graph(
     *,
@@ -361,25 +415,44 @@ async def run_chat_graph(
     confirm: bool = False,
     pending_action: dict | None = None,
 ) -> dict:
-    initial_state: ChatState = {
-        "db": db,
-        "user": user,
-        "access_token": access_token,
-        "message": message,
-        "history": history or [],
-        "forced_intent": forced_intent,
-        "confirm": confirm,
-        "pending_action_in": pending_action,
-        "started_at": time.monotonic(),
-    }
+    initial_state = _build_initial_state(
+        db=db, user=user, access_token=access_token, message=message, history=history,
+        forced_intent=forced_intent, confirm=confirm, pending_action=pending_action,
+    )
     final_state = await _compiled_graph.ainvoke(initial_state)
-    return {
-        "answer": final_state.get("answer", ""),
-        "sources": final_state.get("sources", []),
-        "sql": final_state.get("sql"),
-        "rows": final_state.get("rows", []),
-        "action": final_state.get("action"),
-        "status": final_state.get("status", "n/a"),
-        "result": final_state.get("result"),
-        "pending_action": final_state.get("pending_action"),
-    }
+    return _finalize_response(final_state)
+
+
+async def stream_chat_graph(
+    *,
+    db,
+    user: Employee,
+    access_token: str = "",
+    message: str,
+    history: list[LLMMessage] | None = None,
+    forced_intent: str | None = None,
+    confirm: bool = False,
+    pending_action: dict | None = None,
+):
+    """Same pipeline as run_chat_graph, but yields stage-progress events as
+    each node completes, then a final event with the same payload
+    run_chat_graph returns. Purely observational -- no node's own logic
+    changes; this only reports what's already happening.
+
+    Yields: {"type": "progress", "stage": str} | {"type": "final", "data": dict}
+    """
+    initial_state = _build_initial_state(
+        db=db, user=user, access_token=access_token, message=message, history=history,
+        forced_intent=forced_intent, confirm=confirm, pending_action=pending_action,
+    )
+
+    accumulated: dict = dict(initial_state)
+    async for update in _compiled_graph.astream(initial_state, stream_mode="updates"):
+        for node_name, partial_state in update.items():
+            if partial_state:
+                accumulated.update(partial_state)
+            label = NODE_STAGE_LABELS.get(node_name)
+            if label:
+                yield {"type": "progress", "stage": label}
+
+    yield {"type": "final", "data": _finalize_response(accumulated)}

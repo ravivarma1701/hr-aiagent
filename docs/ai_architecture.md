@@ -291,15 +291,39 @@ never written to this table — only identifiers.
 - Employee-name → id resolution is not implemented for action tools (see
   above); users must supply or look up numeric ids for cross-employee
   actions.
-- Chat history is not persisted server-side (the Phase-3 `/chat/sessions`
-  stub endpoints are untouched); the frontend keeps the conversation in
-  React state for the current page load.
-- No streaming; each request blocks until the LLM call(s) complete.
+- Chat history **is** persisted server-side: one continuous
+  `ChatSession`/`ChatMessage` per user (`services/ai/chat_sessions.py`),
+  replacing the original Phase-3 `/chat/sessions` stubs. `POST
+  /chat/sessions` is get-or-create (idempotent, enforced by a unique
+  constraint on `chat_sessions.user_id`); `GET /chat/sessions/{id}
+  /messages` returns the transcript for resuming a session; ownership is
+  checked on every session-scoped call (`get_owned_session` returns a
+  generic 404 rather than confirming/denying a session belongs to someone
+  else). Only `role`/`content`/`route` are stored — rich UI artifacts
+  (policy source chips, SQL result tables, action result cards) are not
+  persisted, so a resumed session renders as a plain-text transcript for
+  past turns rather than re-rendering those. Not a multi-session picker by
+  design (one continuous conversation per user, no "New Chat" button).
+- **Streaming is stage-progress only, not token-level text.**
+  `POST /chat/stream` (`backend/app/services/ai/graph.py::stream_chat_graph`)
+  streams `{"type": "progress", "stage": "..."}` events as each LangGraph
+  node completes (via `compiled_graph.astream(state, stream_mode="updates")`,
+  a built-in LangGraph capability -- no restructuring of any node's own
+  logic was needed) followed by one `{"type": "final", "data": {...}}`
+  event, over a plain `fetch()` + `ReadableStream` (not `EventSource`,
+  which can't carry the `Authorization: Bearer` header this app
+  authenticates with). The final answer still appears all at once, not
+  word-by-word -- true token-level streaming would require restructuring
+  `llm_client.py`'s completion calls and every agent's generation path, and
+  was left out as a separate, larger follow-up. `/chat/policy`, `/chat/sql`,
+  `/chat/actions` are unchanged and still used for testing/eval; `/chat/stream`
+  is additive, not a replacement.
 - OpenTelemetry/LangSmith tracing and the AI usage dashboard bonuses were
   not implemented, to keep the four core capabilities and audit logging
   solid within scope. LangGraph orchestration, human-in-the-loop
-  confirmation, and a small eval dataset (`docs/ai_eval_results.md`,
-  `backend/scripts/eval_dataset.json`) were implemented as bonuses.
+  confirmation, a small eval dataset (`docs/ai_eval_results.md`,
+  `backend/scripts/eval_dataset.json`), and stage-progress streaming were
+  implemented as bonuses.
 
 ## Security decisions worth calling out
 
