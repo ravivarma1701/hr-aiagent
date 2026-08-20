@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import sqlite3
 
+import structlog
+
 from app.core.config import settings
 from app.models.employee import Employee
 from app.models.enums import Role
 from app.services.ai import sql_guardrails
 from app.services.ai.llm_client import AIUnavailableError, LLMMessage, complete, complete_json, is_configured
 from app.services.ai.permissions import allowed_views_for_role, can_view_raw_sql
+
+logger = structlog.get_logger()
 
 VIEW_SQL_TEMPLATES: dict[str, str] = {
     "v_employees_directory": """
@@ -177,6 +181,15 @@ data that isn't in any allowed view), respond with:
 {{"sql": null, "reason": "<one short sentence explaining why, without confirming or denying that such data exists>"}}
 """
 
+_SQL_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sql": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["sql"],
+}
+
 _SUMMARY_SYSTEM_PROMPT = """You summarize SQL query results for an HR chat assistant.
 Given the user's original question and the resulting rows (as JSON), write a
 concise 1-3 sentence natural-language answer. Do not mention SQL, tables, or
@@ -250,8 +263,10 @@ async def answer_sql_question(question: str, user: Employee) -> dict:
         generation = await complete_json(
             system=_SQL_SYSTEM_PROMPT.format(schema=schema_context),
             user_prompt=question,
+            response_schema=_SQL_RESPONSE_SCHEMA,
         )
     except (AIUnavailableError, ValueError):
+        logger.warning("sql_agent_generation_failed", question=question, role=role.value, exc_info=True)
         return {
             "answer": "I couldn't turn that into a safe query. Please rephrase your question.",
             "sql": None,
@@ -265,6 +280,7 @@ async def answer_sql_question(question: str, user: Employee) -> dict:
 
     validation = sql_guardrails.validate_sql(raw_sql, allowed_views=allowed_views, max_rows=settings.ai_sql_max_rows)
     if not validation.is_valid:
+        logger.warning("sql_agent_guardrail_rejected", question=question, role=role.value, sql=raw_sql, reason=validation.reason)
         return {
             "answer": f"I can't run that query safely: {validation.reason}",
             "sql": None,
@@ -274,6 +290,7 @@ async def answer_sql_question(question: str, user: Employee) -> dict:
     try:
         rows = await _execute_readonly(validation.safe_sql, user.id, role)
     except Exception:
+        logger.warning("sql_agent_execution_failed", question=question, role=role.value, sql=validation.safe_sql, exc_info=True)
         return {
             "answer": "Something went wrong retrieving that data. Please try rephrasing your question.",
             "sql": None,

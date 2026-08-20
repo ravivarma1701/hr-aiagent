@@ -1557,56 +1557,65 @@ export async function streamChat(
     onUnauthorized?: () => void;
   }
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/v1/chat/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      message: payload.message,
-      forced_intent: payload.forcedIntent,
-      session_id: payload.sessionId ?? null,
-      confirm: payload.confirm ?? false,
-      pending_action: payload.pendingAction ?? null,
-    }),
-  });
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        message: payload.message,
+        forced_intent: payload.forcedIntent,
+        session_id: payload.sessionId ?? null,
+        confirm: payload.confirm ?? false,
+        pending_action: payload.pendingAction ?? null,
+      }),
+    });
 
-  if (response.status === 401) {
-    handlers.onUnauthorized?.();
-    return;
-  }
-  if (!response.ok || !response.body) {
-    handlers.onError?.("Request failed.");
-    return;
-  }
+    if (response.status === 401) {
+      handlers.onUnauthorized?.();
+      return;
+    }
+    if (!response.ok || !response.body) {
+      handlers.onError?.("Request failed.");
+      return;
+    }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const rawEvent = buffer.slice(0, boundary).trim();
-      buffer = buffer.slice(boundary + 2);
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const rawEvent = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
 
-      if (rawEvent.startsWith("data:")) {
-        const jsonText = rawEvent.slice(5).trim();
-        if (jsonText) {
-          try {
-            const event = JSON.parse(jsonText);
-            if (event.type === "progress") handlers.onProgress?.(event.stage);
-            else if (event.type === "final") handlers.onFinal(event.data);
-            else if (event.type === "error") handlers.onError?.(event.message ?? "Something went wrong.");
-          } catch {
-            // Malformed/partial chunk -- skip rather than crash the stream reader.
+        if (rawEvent.startsWith("data:")) {
+          const jsonText = rawEvent.slice(5).trim();
+          if (jsonText) {
+            try {
+              const event = JSON.parse(jsonText);
+              if (event.type === "progress") handlers.onProgress?.(event.stage);
+              else if (event.type === "final") handlers.onFinal(event.data);
+              else if (event.type === "error") handlers.onError?.(event.message ?? "Something went wrong.");
+            } catch {
+              // Malformed/partial chunk -- skip rather than crash the stream reader.
+            }
           }
         }
-      }
 
-      boundary = buffer.indexOf("\n\n");
+        boundary = buffer.indexOf("\n\n");
+      }
     }
+  } catch {
+    // A raw network-level failure (fetch itself throwing, or the connection
+    // dropping mid-stream) -- e.g. a transient hiccup or a dev-mode Strict
+    // Mode double-invoke racing an in-flight request. Report it the same
+    // way an HTTP-level failure is reported, rather than letting it become
+    // an unhandled rejection.
+    handlers.onError?.("Network error. Please try again.");
   }
 }

@@ -149,7 +149,13 @@ def _generate_with_thinking_fallback(client, *, contents, base_config_kwargs: di
         return client.models.generate_content(model=settings.ai_model_name, contents=contents, config=config)
 
 
-def _gemini_complete(system: str, messages: list[LLMMessage], max_tokens: int, json_mode: bool = False) -> str:
+def _gemini_complete(
+    system: str,
+    messages: list[LLMMessage],
+    max_tokens: int,
+    json_mode: bool = False,
+    response_schema: dict | None = None,
+) -> str:
     from google.genai import types
 
     client = _get_gemini_client()
@@ -158,15 +164,21 @@ def _gemini_complete(system: str, messages: list[LLMMessage], max_tokens: int, j
         types.Content(role=role_map.get(m.role, "user"), parts=[types.Part.from_text(text=m.content)])
         for m in messages
     ]
-    response = _generate_with_thinking_fallback(
-        client,
-        contents=contents,
-        base_config_kwargs={
-            "system_instruction": system,
-            "max_output_tokens": max_tokens,
-            "response_mime_type": "application/json" if json_mode else None,
-        },
-    )
+    config_kwargs: dict = {
+        "system_instruction": system,
+        "max_output_tokens": max_tokens,
+        "response_mime_type": "application/json" if json_mode else None,
+    }
+    if response_schema is not None:
+        # Controlled generation: constrains decoding so the model cannot
+        # emit tokens outside the schema (e.g. exploratory reasoning prose
+        # before/instead of the JSON object), rather than just asking for
+        # JSON via response_mime_type and hoping the model complies -- we
+        # observed gemini-flash-latest "thinking out loud" in plain text
+        # for an ambiguous SQL-generation prompt even with thinking_config
+        # disabled and response_mime_type=application/json alone.
+        config_kwargs["response_schema"] = _sanitize_schema_for_gemini(response_schema)
+    response = _generate_with_thinking_fallback(client, contents=contents, base_config_kwargs=config_kwargs)
     return response.text or ""
 
 
@@ -248,8 +260,19 @@ async def complete_with_tools(system: str, messages: list[LLMMessage], tools: li
     return await anyio.to_thread.run_sync(_call)
 
 
-async def complete_json(system: str, user_prompt: str, max_tokens: int | None = None) -> dict:
-    """Ask the model for a single JSON object and parse it defensively."""
+async def complete_json(
+    system: str,
+    user_prompt: str,
+    max_tokens: int | None = None,
+    response_schema: dict | None = None,
+) -> dict:
+    """Ask the model for a single JSON object and parse it defensively.
+
+    `response_schema` (a JSON-schema-shaped dict), when given and the
+    provider is Gemini, is passed through as controlled generation so the
+    model's decoding is constrained to that shape -- stronger than
+    `response_mime_type="application/json"` alone, which only requests JSON
+    without guaranteeing the model won't emit other text instead."""
     import anyio
 
     _require_configured()
@@ -258,7 +281,13 @@ async def complete_json(system: str, user_prompt: str, max_tokens: int | None = 
     def _call() -> str:
         if settings.ai_llm_provider == "gemini":
             # Gemini has a native JSON response mode -- no prompt instruction needed.
-            return _gemini_complete(system, [LLMMessage(role="user", content=user_prompt)], effective_max_tokens, json_mode=True)
+            return _gemini_complete(
+                system,
+                [LLMMessage(role="user", content=user_prompt)],
+                effective_max_tokens,
+                json_mode=True,
+                response_schema=response_schema,
+            )
         return _anthropic_complete(
             system + "\n\nRespond with ONLY a single valid JSON object. No prose, no markdown fences.",
             [LLMMessage(role="user", content=user_prompt)],

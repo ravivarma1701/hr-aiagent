@@ -85,6 +85,12 @@ export default function AiCopilotPage() {
             );
           }
         }
+      } catch {
+        // A transient network hiccup during load (e.g. the backend not
+        // quite ready yet, or React Strict Mode's dev-only double-invoke
+        // of this effect racing/aborting the first attempt) shouldn't
+        // surface as an unhandled-rejection crash overlay -- the page
+        // still renders fine with whatever state it managed to load.
       } finally {
         setProfileLoading(false);
       }
@@ -189,6 +195,11 @@ export default function AiCopilotPage() {
           role: "assistant",
           content: "I'm not sure whether that's a policy question, a data lookup, or a task. Could you rephrase, or pick a mode above?",
         });
+    } catch {
+      // A raw network failure (not an HTTP error status -- those already
+      // go through onError above) shouldn't crash the page; show it like
+      // any other failed response instead.
+      appendMessage({ id: newId(), role: "assistant", content: "Something went wrong reaching the server. Please try again.", isError: true });
     } finally {
       setLoading(false);
       setLoadingStage(null);
@@ -201,6 +212,12 @@ export default function AiCopilotPage() {
     setConfirmingMessageId(messageId);
     try {
       await runAction("", true, message.pendingAction, messageId);
+    } catch {
+      updateMessage(messageId, {
+        content: "Something went wrong reaching the server. Please try again.",
+        isError: true,
+        status: "error",
+      });
     } finally {
       setConfirmingMessageId(null);
       setLoadingStage(null);

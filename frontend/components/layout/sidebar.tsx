@@ -28,13 +28,13 @@ export function Sidebar() {
   return (
     <aside className="hidden w-72 border-r border-slate-900/80 bg-gradient-to-b from-[#0f1b33] via-[#0c1730] to-[#081121] md:block">
       <div className="border-b border-white/5 px-4 pb-4 pt-6 text-center">
-        <div className="mx-auto h-20 w-56 overflow-hidden">
+        <div className="mx-auto h-16 w-56">
           <Image
-            src="/logo.png"
-            alt="HRMS Logo"
-            width={320}
-            height={120}
-            className="h-full w-full object-cover object-center"
+            src="/logo.svg"
+            alt="NovaWorks Technologies"
+            width={340}
+            height={100}
+            className="h-full w-full object-contain object-center"
             priority
           />
         </div>

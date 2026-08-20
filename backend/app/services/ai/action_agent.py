@@ -185,6 +185,13 @@ Rules:
 - Never invent employee ids, ticket ids, or project ids. If the user names a
   person or project instead of giving a numeric id, ask them for the id or
   suggest they look it up first.
+- If the user's message clearly asks for one specific action (e.g. approve,
+  reject, assign) but you are missing a required id for THAT action, do not
+  call a different tool as a substitute -- especially not a lookup/list
+  tool. Reply in plain text instead: say which id you need, and if it would
+  help, offer to look up the relevant records first so the user can tell
+  you which one they mean. Only call the lookup tool after the user agrees
+  to that -- never as a silent substitute for the action they actually asked for.
 - If the user's message is not an HR action at all, reply in plain text
   that you handle HR task automation and suggest they rephrase.
 """
@@ -228,6 +235,8 @@ def _summarize_result(tool_name: str, args: dict, result) -> str:
     if tool_name == "assign_employee_to_project" and isinstance(result, dict):
         return f"Employee #{result.get('employee_id')} has been assigned to project #{result.get('project_id')}."
     if tool_name in {"get_my_leave_balances", "get_my_leave_requests", "get_pending_leave_requests", "get_my_tickets", "list_announcements", "list_projects_catalog"}:
+        if isinstance(result, list):
+            return f"Found {len(result)} matching record(s)." if result else "I didn't find any matching records."
         return "Here's what I found."
     return "Done."
 

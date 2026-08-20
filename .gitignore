@@ -43,6 +43,7 @@ backend/storage/hrms.db
 backend/storage/employee-documents/
 backend/storage/profile-photos/
 backend/storage/vector-store/
+backend/storage/hr-policies/
 **/__pycache__/
 *.pyc
 

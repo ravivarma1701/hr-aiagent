@@ -76,6 +76,16 @@ answering a clarifying question).
 Respond as JSON: {"intent": "POLICY_QA|SQL_QUERY|HR_ACTION|UNKNOWN", "confidence": 0.0-1.0, "reason": "short reason"}
 """
 
+_ROUTER_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["POLICY_QA", "SQL_QUERY", "HR_ACTION", "UNKNOWN"]},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+    "required": ["intent"],
+}
+
 
 def _build_router_prompt(message: str, history: list[LLMMessage] | None) -> str:
     if not history:
@@ -101,7 +111,9 @@ async def classify_intent(message: str, history: list[LLMMessage] | None = None)
     if is_configured():
         try:
             prompt = _build_router_prompt(message, history)
-            result = await complete_json(system=_ROUTER_SYSTEM_PROMPT, user_prompt=prompt, max_tokens=200)
+            result = await complete_json(
+                system=_ROUTER_SYSTEM_PROMPT, user_prompt=prompt, max_tokens=200, response_schema=_ROUTER_RESPONSE_SCHEMA
+            )
             intent = result.get("intent")
             if intent in VALID_INTENTS:
                 confidence = float(result.get("confidence", 0.5))

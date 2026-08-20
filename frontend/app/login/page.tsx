@@ -52,13 +52,13 @@ export default function LoginPage() {
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(95,92,255,0.35),transparent_40%),radial-gradient(circle_at_80%_5%,rgba(59,130,246,0.22),transparent_35%),linear-gradient(180deg,#0a1230_0%,#050a1f_55%,#040818_100%)]" />
       <Card className="relative w-full max-w-md border border-indigo-300/20 bg-slate-950/70 text-slate-100 shadow-2xl backdrop-blur">
         <CardHeader className="space-y-3">
-          <div className="mx-auto h-20 w-56 overflow-hidden">
+          <div className="mx-auto h-16 w-56">
             <Image
-              src="/logo.png"
-              alt="HRMS Logo"
-              width={320}
-              height={120}
-              className="h-full w-full object-cover object-center"
+              src="/logo.svg"
+              alt="NovaWorks Technologies"
+              width={340}
+              height={100}
+              className="h-full w-full object-contain object-center"
               priority
             />
           </div>

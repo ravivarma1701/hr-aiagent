@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     app_timezone: str = "Asia/Kolkata"
     database_url: str = "sqlite+aiosqlite:///./storage/hrms.db"
 
+    # Comma-separated list of allowed frontend origins for CORS. Must include
+    # the deployed frontend's exact origin (scheme + host, no trailing
+    # slash) in production -- e.g. "https://your-app.vercel.app".
+    cors_allowed_origins: str = "http://localhost:3000"
+
     jwt_secret_key: str = "change_me"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
